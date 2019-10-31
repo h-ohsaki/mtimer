@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+#
+# 32 x 16 dot matrix panel driver for Raspberry Pi.
+# Copyright (c) 2019, Hiroyuki Ohsaki.
+# All rights reserved.
+#
+# $Id: mtimer,v 1.19 2019/10/31 17:54:17 ohsaki Exp $
+#
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# https://www.raspberrypi.org/documentation/usage/gpio/
+# https://sourceforge.net/p/raspberry-gpio-python/wiki/BasicUsage/
+
+import sys
+import time
+import threading
+
+from perlcompat import die, warn, getopts
+import RPi.GPIO as GPIO
+
+FPS = 3.
+FONT_FILE = '/home/pi/mtimer/hiro16a.fnt'
+FONT_WIDTH = 8
+FONT_HEIGHT = 16
+
+GREEN = 2
+ORANGE = 3
+RED = 1
+BLACK = 0
+
+BUZZER_PIN = 13
+SW_PIN = 3
+
+def usage():
+    die(f"""\
+usage: {sys.argv[0]} [-v] [-l min] [-L min]
+  -l min  slot duration in minutes
+  -L min  total duration in minutes
+""")
+
+class Timer:
+    def __init__(self, duration):
+        self.duration = int(duration)
+        self.started = time.time()
+        self.count = 0
+
+    def update(self):
+        self.elapsed = int(time.time() - self.started)
+        self.remaining = max(self.duration - self.elapsed, 0)
+        if self.remaining == 0:
+            self.started = time.time()
+            self.count += 1
+
+class Matrix:
+    def __init__(self):
+        self.width = 32  # panel width
+        self.height = 16  # panel height
+        self.clear()
+        self.nframes = 0
+
+        # map input signals to GPIO pins
+        self.se = 9
+        self.ab = 10
+        self.addr = [25, 24, 23, 22]
+        self.dg = 17
+        self.clk = 14
+        self.we = 15
+        self.dr = 18
+        self.ale = 27
+
+        # initialize GPIO pins
+        GPIO.setup([9, 10, 25, 24, 23, 22, 17, 14, 15, 18, 27], GPIO.OUT)
+
+        # enable automatic RAM buffer switching
+        GPIO.output(self.se, 0)
+        GPIO.output(self.ab, 0)
+
+    def clear(self):
+        """Clear VRAM (all pixels are filled with black)."""
+        self.vram = [[BLACK] * self.width for j in range(self.height)]
+
+    def load_font(self, file):
+        """Load 8x16 bitmap font for all characters from FILE."""
+        self.font = []
+        with open(file, 'rb') as f:
+            while True:
+                buf = f.read(FONT_HEIGHT)
+                if not buf:
+                    break
+                self.font.append(buf)
+
+    def getpixel(self, col, row):
+        """Return the pixel color at the poisition (COL, ROW) in VRAM.  Return
+        None if the position is invalid."""
+        try:
+            return self.vram[row][col]
+        except IndexError:
+            return None
+
+    def putpixel(self, col, row, color=GREEN):
+        """Overwrite the pixel color at (COL, ROW) with COLOR.  If the
+        position (COL, ROW) is invalid, raise IndexError."""
+        if col < 0 or row < 0:
+            return
+        try:
+            self.vram[row][col] = color
+        except IndexError:
+            pass
+
+    def putchar(self, col, row, char, color=GREEN):
+        """Render a bitmap charactoer CHAR at the position (COL, ROW) in
+        color COLOR.  Each character is 8 x 11 pixels (the first three rows
+        and the last two rows are not rendered)."""
+        for j in range(FONT_HEIGHT - 5):
+            v = self.font[ord(char)][3 + j]
+            for i in range(FONT_WIDTH):
+                if v & (1 << (7 - i)):
+                    self.putpixel(col + i, row + j, color)
+                else:
+                    self.putpixel(col + i, row + j, BLACK)
+
+    def putstr(self, col, row, astr, color=GREEN):
+        """Render a string ASTR at the position (ROW, COL) in color COLOR."""
+        for c in astr:
+            self.putchar(col, row, c, color)
+            col += FONT_WIDTH
+
+    def send_row(self, row):
+        """Send the ROW-th line of the VRAM to the matrix LED."""
+        # send 32-bit data in series
+        for i in range(self.width):
+            GPIO.output(self.clk, 0)
+            GPIO.output(self.dr, self.getpixel(i, row) & RED)
+            GPIO.output(self.dg, self.getpixel(i, row) & GREEN)
+            # signal is fetched at rising edge
+            GPIO.output(self.clk, 1)
+        # send address
+        GPIO.output(self.ale, 1)
+        for i in range(4):
+            GPIO.output(self.addr[i], row & (1 << i))
+        # write transferred data to the current working RAM
+        GPIO.output(self.we, 1)
+        GPIO.output(self.we, 0)
+        GPIO.output(self.ale, 0)
+
+    def flush(self):
+        """Send all lines of the VRAM to the matrix LED."""
+        for row in range(self.height):
+            self.send_row(row)
+        self.nframes += 1
+
+    def draw_progress_bar(self, col, row, size, ratio, color=GREEN):
+        """Plot a horizontal bar indicating a fraction of RATIO at the
+        position (COL, ROW) in color COLOR.  The full length of the bar is
+        specified by SIZE."""
+        npixels = size * ratio
+        for n in range(int(npixels)):
+            self.putpixel(col + n, row, color)
+        # flash an addiotional pixel as fraction indicator
+        if npixels - int(npixels) > .5 and self.nframes & 1 == 0:
+            self.putpixel(col + int(npixels), row, color)
+
+def draw(matrix, slot_timer, total_timer, alert_times):
+    def get_color(val, alert_times):
+        low, high, last = alert_times
+        if val <= low:
+            return RED
+        elif val <= high:
+            return ORANGE
+        return GREEN
+
+    # draw remaining time
+    mm = slot_timer.remaining // 60
+    ss = slot_timer.remaining % 60
+    color = get_color(slot_timer.remaining, alert_times)
+    matrix.putstr(0, 2, f'{mm:02}{ss:02}', color)
+
+    # display slot counter
+    for n in range(slot_timer.count + 1):
+        matrix.putpixel(n * 2, 14, GREEN)
+
+    # draw reamining time indicator
+    ratio = slot_timer.remaining / slot_timer.duration
+    color = get_color(slot_timer.remaining, alert_times)
+    matrix.draw_progress_bar(0, 15, matrix.width, ratio, color)
+
+    # draw total reamining time indicator
+    ratio = total_timer.remaining / total_timer.duration
+    color = get_color(total_timer.remaining, (10 * 60, 30 * 60, 0))
+    matrix.draw_progress_bar(0, 0, matrix.width, ratio, color)
+
+def play_buzzer(buzzer, interval, duration):
+    for i in range(int(duration / interval)):
+        buzzer.start(100)
+        time.sleep(interval / 2)
+        buzzer.stop()
+        time.sleep(interval / 2)
+
+def main():
+    opt = getopts('l:L:') or usage()
+    slot_len = float(opt.l) * 60 if opt.l else 12 * 60
+    total_len = float(opt.L) * 60 if opt.L else 90 * 60
+    alert_times = 3 * 60, 1 * 60, 0
+
+    # use GPIO numbers as pin numbers
+    GPIO.setmode(GPIO.BCM)
+
+    # create and initialize matrix LED object
+    matrix = Matrix()
+    matrix.load_font(FONT_FILE)
+    matrix.flush()
+
+    # piezo buzzer
+    GPIO.setup(BUZZER_PIN, GPIO.OUT)
+    buzzer = GPIO.PWM(BUZZER_PIN, 50)
+
+    # NOTE: workaround since GPIO.IN, pull_up_down=GPIO.PUD_DOWN
+    # doesn't work
+    GPIO.setup(SW_PIN, GPIO.OUT)
+    GPIO.output(SW_PIN, 0)
+
+    slot_timer = Timer(slot_len)
+    total_timer = Timer(total_len)
+    last_update = time.time()
+    while True:
+        # limit the frame rate by FPS
+        elapsed = time.time() - last_update
+        if elapsed < 1 / FPS:
+            time.sleep(1 / FPS - elapsed)
+
+        slot_timer.update()
+        total_timer.update()
+        matrix.clear()
+        draw(matrix, slot_timer, total_timer, alert_times)
+        matrix.flush()
+
+        # sound buzzer when required
+        if slot_timer.remaining == alert_times[0]:
+            t = threading.Thread(target=play_buzzer, args=(buzzer, 3, 3))
+            t.start()
+        elif slot_timer.remaining == alert_times[1]:
+            t = threading.Thread(target=play_buzzer, args=(buzzer, .4, 2))
+            t.start()
+        elif slot_timer.remaining == alert_times[2]:
+            t = threading.Thread(target=play_buzzer, args=(buzzer, .2, 4))
+            t.start()
+
+        # reset the timer if button is pressed
+        if GPIO.input(SW_PIN):
+            if slot_timer.elapsed <= 1 / FPS:
+                slot_timer = Timer(80 * 60)
+                total_timer = Timer(80 * 60)
+                alert_times = 30 * 60, 10 * 60, 0
+            else:
+                slot_timer = Timer(slot_len)
+                total_timer = Timer(total_len)
+                alert_times = 3 * 60, 1 * 60, 0
+
+        last_update = time.time()
+
+if __name__ == "__main__":
+    main()
