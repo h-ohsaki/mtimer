@@ -24,14 +24,14 @@
 # https://sourceforge.net/p/raspberry-gpio-python/wiki/BasicUsage/
 
 import sys
-import time
 import threading
+import time
 
 from perlcompat import die, warn, getopts
 import RPi.GPIO as GPIO
 
 FPS = 3.
-FONT_FILE = '/home/pi/mtimer/hiro16a.fnt'
+FONT_FILE = 'hiro16a.fnt'
 FONT_WIDTH = 8
 FONT_HEIGHT = 16
 
@@ -248,13 +248,13 @@ def main():
 
         # sound buzzer when required
         if slot_timer.remaining == alert_times[0]:
-            t = threading.Thread(target=play_buzzer, args=(buzzer, 3, 3))
+            t = threading.Thread(target=play_buzzer, args=(buzzer, 3, 2.5))
             t.start()
         elif slot_timer.remaining == alert_times[1]:
-            t = threading.Thread(target=play_buzzer, args=(buzzer, .4, 2))
+            t = threading.Thread(target=play_buzzer, args=(buzzer, .4, 2.5))
             t.start()
         elif slot_timer.remaining == alert_times[2]:
-            t = threading.Thread(target=play_buzzer, args=(buzzer, .2, 4))
+            t = threading.Thread(target=play_buzzer, args=(buzzer, .2, 5))
             t.start()
 
         # reset the timer if button is pressed
