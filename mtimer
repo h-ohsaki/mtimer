@@ -275,15 +275,24 @@ def main():
         # reset the timer if button is pressed
         if GPIO.input(SW_PIN):
             npressed += 1
-            if npressed == 1:
+            if npressed >= FPS * 6:
+                slot_timer = Timer(10 * 60)
+                total_timer = Timer(total_len)
+            elif npressed >= FPS * 5:
+                slot_timer = Timer(20 * 60)
+                total_timer = Timer(total_len)
+            elif npressed >= FPS * 4:
+                slot_timer = Timer(30 * 60)
+                total_timer = Timer(total_len)
+            elif npressed >= FPS * 3:
+                slot_timer = Timer(60 * 60)
+                total_timer = Timer(total_len)
+            elif npressed >= FPS * 2:
+                slot_timer = Timer(80 * 60)
+                total_timer = Timer(total_len)
+            else:
                 slot_timer = Timer(slot_len)
                 total_timer = Timer(total_len)
-            elif npressed == 6:
-                slot_timer = Timer(80 * 60)
-                total_timer = Timer(80 * 60)
-            elif npressed == 12:
-                slot_timer = Timer(30 * 60)
-                total_timer = Timer(30 * 60)
         else:
             npressed = 0
 
