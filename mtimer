@@ -30,7 +30,7 @@ import time
 from perlcompat import die, warn, getopts
 import RPi.GPIO as GPIO
 
-FPS = 1.
+FPS = 3.
 FONT_FILE = 'hiro16a.fnt'
 FONT_WIDTH = 8
 FONT_HEIGHT = 16
@@ -42,6 +42,8 @@ BLACK = 0
 
 BUZZER_PIN = 13
 SW_PIN = 3
+
+ALERT_TONES = ((2.5, 1), (.5, 5), (.25, 20))
 
 def usage():
     die(f"""\
@@ -201,12 +203,33 @@ def draw(matrix, slot_timer, total_timer, alert_times):
     color = get_color(total_timer.remaining, (10 * 60, 30 * 60, 0))
     matrix.draw_progress_bar(0, 0, matrix.width, ratio, color)
 
-def play_buzzer(buzzer, interval, duration):
-    for i in range(int(duration / interval)):
+_last_update = time.time()
+
+def limit_fps(fps):
+    """Limit the invocation rate of this function by FPS."""
+    global _last_update
+    elapsed = time.time() - _last_update
+    if elapsed < 1 / fps:
+        time.sleep(1 / fps - elapsed)
+    _last_update = time.time()
+
+def play_buzzer(buzzer, interval, ntimes):
+    """Play a buzzer of length INTERVAL repeating NTIMES times using BUZZER
+    object."""
+    for i in range(ntimes):
         buzzer.start(100)
         time.sleep(interval / 2)
         buzzer.stop()
         time.sleep(interval / 2)
+
+def alert_if_necessary(buzzer, remaining, alert_times, alerted):
+    for n, sec in enumerate(alert_times):
+        # sound buzzer as alert
+        if not alerted[n] and remaining == sec:
+            alerted[n] = True
+            t = threading.Thread(target=play_buzzer,
+                                 args=(buzzer, *ALERT_TONES[n]))
+            t.start()
 
 def main():
     opt = getopts('l:L:') or usage()
@@ -216,16 +239,13 @@ def main():
 
     # use GPIO numbers as pin numbers
     GPIO.setmode(GPIO.BCM)
-
     # create and initialize matrix LED object
     matrix = Matrix()
     matrix.load_font(FONT_FILE)
     matrix.flush()
-
     # piezo buzzer
     GPIO.setup(BUZZER_PIN, GPIO.OUT)
     buzzer = GPIO.PWM(BUZZER_PIN, 50)
-
     # NOTE: workaround since GPIO.IN, pull_up_down=GPIO.PUD_DOWN
     # doesn't work
     GPIO.setup(SW_PIN, GPIO.OUT)
@@ -233,30 +253,14 @@ def main():
 
     slot_timer = Timer(slot_len)
     total_timer = Timer(total_len)
-    last_update = time.time()
+    alerted = [None, None, None]
     while True:
-        # limit the frame rate by FPS
-        elapsed = time.time() - last_update
-        if elapsed < 1 / FPS:
-            time.sleep(1 / FPS - elapsed)
-
         slot_timer.update()
         total_timer.update()
         matrix.clear()
         draw(matrix, slot_timer, total_timer, alert_times)
         matrix.flush()
-
-        # sound buzzer when required
-        # FIXME: cause multiple triggers when FPS >= 2
-        if slot_timer.remaining == alert_times[0]:
-            t = threading.Thread(target=play_buzzer, args=(buzzer, .8, 2.5))
-            t.start()
-        elif slot_timer.remaining == alert_times[1]:
-            t = threading.Thread(target=play_buzzer, args=(buzzer, .4, 2.5))
-            t.start()
-        elif slot_timer.remaining == alert_times[2]:
-            t = threading.Thread(target=play_buzzer, args=(buzzer, .2, 5))
-            t.start()
+        alert_if_necessary(buzzer, slot_timer.remaining, alert_times, alerted)
 
         # reset the timer if button is pressed
         if GPIO.input(SW_PIN):
@@ -269,7 +273,7 @@ def main():
                 total_timer = Timer(total_len)
                 alert_times = 3 * 60, 1 * 60, 0
 
-        last_update = time.time()
+        limit_fps(FPS)
 
 if __name__ == "__main__":
     main()
