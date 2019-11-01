@@ -30,7 +30,7 @@ import time
 from perlcompat import die, warn, getopts
 import RPi.GPIO as GPIO
 
-FPS = 3.
+FPS = 1.
 FONT_FILE = 'hiro16a.fnt'
 FONT_WIDTH = 8
 FONT_HEIGHT = 16
@@ -174,10 +174,10 @@ class Matrix:
 
 def draw(matrix, slot_timer, total_timer, alert_times):
     def get_color(val, alert_times):
-        low, high, last = alert_times
+        high, low, last = alert_times
         if val <= low:
             return RED
-        elif val <= high:
+        if val <= high:
             return ORANGE
         return GREEN
 
@@ -247,8 +247,9 @@ def main():
         matrix.flush()
 
         # sound buzzer when required
+        # FIXME: cause multiple triggers when FPS >= 2
         if slot_timer.remaining == alert_times[0]:
-            t = threading.Thread(target=play_buzzer, args=(buzzer, 3, 2.5))
+            t = threading.Thread(target=play_buzzer, args=(buzzer, .8, 2.5))
             t.start()
         elif slot_timer.remaining == alert_times[1]:
             t = threading.Thread(target=play_buzzer, args=(buzzer, .4, 2.5))
