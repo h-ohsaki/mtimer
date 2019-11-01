@@ -43,7 +43,7 @@ BLACK = 0
 BUZZER_PIN = 13
 SW_PIN = 3
 
-ALERT_TONES = ((2.5, 1), (.5, 5), (.25, 20))
+ALERT_TONES = ((2.5, 1), (1., 2), (.5, 5), (.25, 20))
 
 def usage():
     die(f"""\
@@ -174,19 +174,18 @@ class Matrix:
         if npixels - int(npixels) > .5 and self.nframes & 1 == 0:
             self.putpixel(col + int(npixels), row, color)
 
-def draw(matrix, slot_timer, total_timer, alert_times):
-    def get_color(val, alert_times):
-        high, low, last = alert_times
-        if val <= low:
+def draw(matrix, slot_timer, total_timer):
+    def get_color(remaining, total):
+        if remaining <= 60:
             return RED
-        if val <= high:
+        if remaining <= total * .25:
             return ORANGE
         return GREEN
 
     # draw remaining time
     mm = slot_timer.remaining // 60
     ss = slot_timer.remaining % 60
-    color = get_color(slot_timer.remaining, alert_times)
+    color = get_color(slot_timer.remaining, slot_timer.duration)
     matrix.putstr(0, 2, f'{mm:02}{ss:02}', color)
 
     # display slot counter
@@ -195,12 +194,12 @@ def draw(matrix, slot_timer, total_timer, alert_times):
 
     # draw reamining time indicator
     ratio = slot_timer.remaining / slot_timer.duration
-    color = get_color(slot_timer.remaining, alert_times)
+    color = get_color(slot_timer.remaining, slot_timer.duration)
     matrix.draw_progress_bar(0, 15, matrix.width, ratio, color)
 
     # draw total reamining time indicator
     ratio = total_timer.remaining / total_timer.duration
-    color = get_color(total_timer.remaining, (10 * 60, 30 * 60, 0))
+    color = get_color(total_timer.remaining, total_timer.duration)
     matrix.draw_progress_bar(0, 0, matrix.width, ratio, color)
 
 _last_update = time.time()
@@ -228,19 +227,25 @@ def play_buzzer(buzzer, interval, ntimes):
         buzzer.stop()
         time.sleep(interval / 2)
 
-def alert_if_necessary(buzzer, remaining, alert_times):
-    for n, sec in enumerate(alert_times):
-        # sound buzzer as alert
-        if remaining == sec:
-            t = threading.Thread(target=play_buzzer,
-                                 args=(buzzer, *ALERT_TONES[n]))
-            t.start()
+def alert_if_necessary(buzzer, remaining, duration):
+    if remaining == 0:
+        n = 3
+    elif remaining == 60:
+        n = 2
+    elif remaining == int(duration * .25):
+        n = 1
+    elif remaining == int(duration * .5):
+        n = 0
+    else:
+        return
+    # sound buzzer as alert
+    t = threading.Thread(target=play_buzzer, args=(buzzer, *ALERT_TONES[n]))
+    t.start()
 
 def main():
     opt = getopts('l:L:') or usage()
     slot_len = float(opt.l) * 60 if opt.l else 12 * 60
     total_len = float(opt.L) * 60 if opt.L else 90 * 60
-    alert_times = 3 * 60, 1 * 60, 0
 
     # use GPIO numbers as pin numbers
     GPIO.setmode(GPIO.BCM)
@@ -258,24 +263,29 @@ def main():
 
     slot_timer = Timer(slot_len)
     total_timer = Timer(total_len)
+    npressed = 0
     while True:
         slot_timer.update()
         total_timer.update()
         matrix.clear()
-        draw(matrix, slot_timer, total_timer, alert_times)
+        draw(matrix, slot_timer, total_timer)
         matrix.flush()
-        alert_if_necessary(buzzer, slot_timer.remaining, alert_times)
+        alert_if_necessary(buzzer, slot_timer.remaining, slot_timer.duration)
 
         # reset the timer if button is pressed
         if GPIO.input(SW_PIN):
-            if slot_timer.elapsed <= 1 / FPS:
-                slot_timer = Timer(80 * 60)
-                total_timer = Timer(80 * 60)
-                alert_times = 30 * 60, 10 * 60, 0
-            else:
+            npressed += 1
+            if npressed == 1:
                 slot_timer = Timer(slot_len)
                 total_timer = Timer(total_len)
-                alert_times = 3 * 60, 1 * 60, 0
+            elif npressed == 6:
+                slot_timer = Timer(80 * 60)
+                total_timer = Timer(80 * 60)
+            elif npressed == 12:
+                slot_timer = Timer(30 * 60)
+                total_timer = Timer(30 * 60)
+        else:
+            npressed = 0
 
         limit_fps(FPS)
 
