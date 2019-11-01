@@ -272,6 +272,7 @@ def main():
                 slot_timer = Timer(slot_len)
                 total_timer = Timer(total_len)
                 alert_times = 3 * 60, 1 * 60, 0
+            alerted = [None, None, None]
 
         limit_fps(FPS)
 
