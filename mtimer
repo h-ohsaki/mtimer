@@ -213,20 +213,25 @@ def limit_fps(fps):
         time.sleep(1 / fps - elapsed)
     _last_update = time.time()
 
+_buzzer_end_time = time.time()
+
 def play_buzzer(buzzer, interval, ntimes):
     """Play a buzzer of length INTERVAL repeating NTIMES times using BUZZER
     object."""
+    global _buzzer_end_time
+    if time.time() < _buzzer_end_time:
+        return
+    _buzzer_end_time = time.time() + (interval * ntimes)
     for i in range(ntimes):
         buzzer.start(100)
         time.sleep(interval / 2)
         buzzer.stop()
         time.sleep(interval / 2)
 
-def alert_if_necessary(buzzer, remaining, alert_times, alerted):
+def alert_if_necessary(buzzer, remaining, alert_times):
     for n, sec in enumerate(alert_times):
         # sound buzzer as alert
-        if not alerted[n] and remaining == sec:
-            alerted[n] = True
+        if remaining == sec:
             t = threading.Thread(target=play_buzzer,
                                  args=(buzzer, *ALERT_TONES[n]))
             t.start()
@@ -253,14 +258,13 @@ def main():
 
     slot_timer = Timer(slot_len)
     total_timer = Timer(total_len)
-    alerted = [None, None, None]
     while True:
         slot_timer.update()
         total_timer.update()
         matrix.clear()
         draw(matrix, slot_timer, total_timer, alert_times)
         matrix.flush()
-        alert_if_necessary(buzzer, slot_timer.remaining, alert_times, alerted)
+        alert_if_necessary(buzzer, slot_timer.remaining, alert_times)
 
         # reset the timer if button is pressed
         if GPIO.input(SW_PIN):
@@ -272,7 +276,6 @@ def main():
                 slot_timer = Timer(slot_len)
                 total_timer = Timer(total_len)
                 alert_times = 3 * 60, 1 * 60, 0
-            alerted = [None, None, None]
 
         limit_fps(FPS)
 
